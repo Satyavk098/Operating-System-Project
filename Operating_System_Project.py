@@ -1,81 +1,51 @@
 import os
-import hashlib
-import getpass
-import secrets
-import ctypes
-import time
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.backends import default_backend
+import bcrypt
+import pyotp
+import logging
+from flask import Flask, request, jsonify
+from werkzeug.security import generate_password_hash, check_password_hash
 
-# Function to securely hash a password using PBKDF2
-# This enhances password security by making brute force attacks difficult
-def secure_hash(password: str, salt: bytes) -> bytes:
-    kdf = PBKDF2HMAC(
-        algorithm=hashes.SHA256(),
-        length=32,
-        salt=salt,
-        iterations=100000,
-        backend=default_backend()
-    )
-    return kdf.derive(password.encode())
+# Setup logging
+logging.basicConfig(filename='auth.log', level=logging.INFO, format='%(asctime)s - %(message)s')
 
-# Function to validate a user-entered password against the stored hash
-def validate_password(stored_hash: bytes, password: str, salt: bytes) -> bool:
-    try:
-        return secrets.compare_digest(stored_hash, secure_hash(password, salt))
-    except Exception:
-        return False
+app = Flask(__name__)
 
-# Function to verify if the user is authenticated with the operating system
-def check_os_authentication() -> bool:
-    try:
-        username = os.getlogin()
-        print(f"System user detected: {username}")
+# Sample user database
+users = {
+    "user1": {
+        "password_hash": generate_password_hash("SecurePass123"),
+        "mfa_secret": pyotp.random_base32()
+    }
+}
+
+# Function to authenticate user
+def authenticate(username, password):
+    if username in users and check_password_hash(users[username]['password_hash'], password):
+        logging.info(f"User {username} authenticated successfully.")
         return True
-    except Exception as e:
-        print(f"OS authentication check failed: {e}")
-        return False
+    logging.warning(f"Failed authentication attempt for {username}.")
+    return False
 
-# Function to implement buffer overflow protection
-def buffer_overflow_protection():
-    try:
-        libc = ctypes.CDLL("libc.so.6")
-        libc.malloc_trim(0)  # Releases unused heap memory to mitigate buffer overflow risks
-    except Exception as e:
-        print(f"Buffer overflow protection failed: {e}")
+# Function to verify MFA token
+def verify_mfa(username, token):
+    totp = pyotp.TOTP(users[username]['mfa_secret'])
+    return totp.verify(token)
 
-# Function to implement multi-factor authentication using a one-time password (OTP)
-def multi_factor_authentication():
-    otp = secrets.randbelow(1000000)  # Generate a random 6-digit OTP
-    print(f"Generated OTP (For demonstration purposes): {otp}")
-    user_otp = input("Enter the OTP sent to your device: ")
-    return user_otp.strip() == str(otp)
+# Route for user login
+@app.route('/login', methods=['POST'])
+def login():
+    data = request.json
+    username = data.get("username")
+    password = data.get("password")
+    token = data.get("token")
 
-# Main authentication function that integrates OS authentication, password validation, and MFA
-def authentication_module():
-    username = input("Enter username: ")
-    password = getpass.getpass("Enter password: ")
-    salt = os.urandom(16)  # Generate a random salt for password hashing
-    stored_hash = secure_hash(password, salt)
-    
-    if not check_os_authentication():
-        print("OS authentication failed.")
-        return False
-    
-    if not validate_password(stored_hash, password, salt):
-        print("Password validation failed.")
-        return False
-    
-    if not multi_factor_authentication():
-        print("Multi-factor authentication failed.")
-        return False
-    
-    buffer_overflow_protection()
-    
-    print("Authentication successful!")
-    return True
+    if authenticate(username, password):
+        if verify_mfa(username, token):
+            return jsonify({"message": "Login successful!"}), 200
+        return jsonify({"error": "Invalid MFA token"}), 401
+    return jsonify({"error": "Invalid username or password"}), 401
 
-# Entry point of the script
-if __name__ == "__main__":
-    authentication_module()
+# Start the Flask server
+if __name__ == '__main__':
+    app.run(debug=True)
+
